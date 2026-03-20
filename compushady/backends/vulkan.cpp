@@ -598,6 +598,8 @@ static PyTypeObject vulkan_Sampler_Type = {
     "compushady vulkan Sampler",                                         /* tp_doc */
 };
 
+static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args);
+
 static PyMemberDef vulkan_Device_members[] = {
     {"name", T_OBJECT_EX, offsetof(vulkan_Device, name), 0, "device name/description"},
     {"dedicated_video_memory", T_ULONGLONG, offsetof(vulkan_Device, dedicated_video_memory), 0,
