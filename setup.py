@@ -134,7 +134,7 @@ elif is_mac:
     ]
 
 setup(
-    name="compushady",
+    name="compushady-lrtu",
     version="0.17.5.post1",
     description="The compushady GPU Compute module",
     author="Roberto De Ioris",
