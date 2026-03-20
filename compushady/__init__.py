@@ -1,7 +1,8 @@
-import importlib
-from . import config
 import atexit
+import importlib
 import os
+
+from . import config
 
 HEAP_DEFAULT = 0
 HEAP_UPLOAD = 1
@@ -355,6 +356,9 @@ class Swapchain:
 
     def present(self, resource, x=0, y=0):
         self.handle.present(resource.handle, x, y)
+
+    def is_suboptimal(self):
+        return self.handle.is_suboptimal()
 
 
 class Sampler:
