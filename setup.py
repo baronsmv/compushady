@@ -1,6 +1,6 @@
-from setuptools import setup, Extension
 import os
 import platform
+from setuptools import setup, Extension
 
 is_windows = platform.system() == "Windows"
 is_mac = platform.system() == "Darwin"
@@ -135,7 +135,7 @@ elif is_mac:
 
 setup(
     name="compushady-lrtu",
-    version="0.17.5.post1",
+    version="0.17.5.post2",
     description="The compushady GPU Compute module",
     author="Roberto De Ioris",
     author_email="roberto.deioris@gmail.com",
