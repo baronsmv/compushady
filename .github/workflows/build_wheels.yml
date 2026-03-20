@@ -1,0 +1,73 @@
+name: Build and upload compushady-fork to PyPI
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build_wheels:
+    name: Build wheel for cp${{ matrix.python }}-${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: manylinux_x86_64
+            python: 39
+          - os: ubuntu-latest
+            platform: manylinux_x86_64
+            python: 310
+          - os: ubuntu-latest
+            platform: manylinux_x86_64
+            python: 311
+          - os: ubuntu-latest
+            platform: manylinux_x86_64
+            python: 312
+          - os: ubuntu-latest
+            platform: manylinux_x86_64
+            python: 313
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install cibuildwheel
+        run: python -m pip install cibuildwheel
+
+      - name: Build wheels
+        env:
+          CIBW_BEFORE_ALL_LINUX: >
+            yum install -y libX11-devel vulkan-devel || dnf install -y libX11-devel vulkan-devel
+          CIBW_ARCHS_LINUX: x86_64
+          CIBW_BUILD: cp${{ matrix.python }}-${{ matrix.platform }}
+          CIBW_SKIP: "*-musllinux*"
+          CIBW_BUILD_VERBOSITY: 1
+        run: python -m cibuildwheel --output-dir wheelhouse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform }}-cp${{ matrix.python }}
+          path: ./wheelhouse/*.whl
+
+  upload_pypi:
+    name: Upload wheels to PyPI
+    needs: build_wheels
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

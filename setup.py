@@ -135,7 +135,7 @@ elif is_mac:
 
 setup(
     name="compushady",
-    version="0.17.6",
+    version="0.17.5.post1",
     description="The compushady GPU Compute module",
     author="Roberto De Ioris",
     author_email="roberto.deioris@gmail.com",
