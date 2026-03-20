@@ -512,8 +512,115 @@ static PyObject* vulkan_Swapchain_is_suboptimal(vulkan_Swapchain* self, PyObject
         Py_RETURN_FALSE;
 }
 
+static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args)
+{
+    PyObject *py_resource;
+    uint32_t x;
+    uint32_t y;
+    if (!PyArg_ParseTuple(args, "OII", &py_resource, &x, &y))
+        return NULL;
 
-static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args);
+    int ret = PyObject_IsInstance(py_resource, (PyObject *)&vulkan_Resource_Type);
+    if (ret < 0)
+        return NULL;
+    if (ret == 0)
+        return PyErr_Format(PyExc_ValueError, "Expected a Resource object");
+    vulkan_Resource *src_resource = (vulkan_Resource *)py_resource;
+    if (!src_resource->image)
+        return PyErr_Format(PyExc_ValueError, "Expected a Texture object");
+
+    uint32_t index = 0;
+    VkResult result = vkAcquireNextImageKHR(self->py_device->device, self->swapchain, UINT64_MAX,
+                                            self->copy_semaphore, VK_NULL_HANDLE, &index);
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+    {
+        return PyErr_Format(PyExc_Exception, "unable to acquire next image from Swapchain (VkResult=%d)", result);
+    }
+    self->suboptimal = (result == VK_SUBOPTIMAL_KHR);
+
+    x = Py_MIN(x, self->image_extent.width - 1);
+    y = Py_MIN(y, self->image_extent.height - 1);
+
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    VkImageMemoryBarrier image_memory_barrier[2] = {};
+    image_memory_barrier[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    image_memory_barrier[0].image = self->images[index];
+    image_memory_barrier[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    image_memory_barrier[0].subresourceRange.levelCount = 1;
+    image_memory_barrier[0].subresourceRange.layerCount = 1;
+    image_memory_barrier[0].oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    image_memory_barrier[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    image_memory_barrier[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    image_memory_barrier[1].image = src_resource->image;
+    image_memory_barrier[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    image_memory_barrier[1].subresourceRange.levelCount = 1;
+    image_memory_barrier[1].subresourceRange.layerCount = 1;
+    image_memory_barrier[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    image_memory_barrier[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
+    VkImageCopy image_copy = {};
+    image_copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    image_copy.srcSubresource.layerCount = 1;
+    image_copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    image_copy.dstSubresource.layerCount = 1;
+    image_copy.extent.width = Py_MIN(src_resource->image_extent.width, self->image_extent.width - x);
+    image_copy.extent.height = Py_MIN(src_resource->image_extent.height, self->image_extent.height - y);
+    image_copy.extent.depth = 1;
+    image_copy.dstOffset.x = x;
+    image_copy.dstOffset.y = y;
+
+    vkBeginCommandBuffer(self->py_device->command_buffer, &begin_info);
+    vkCmdPipelineBarrier(self->py_device->command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, 0, 0, 0, 2, image_memory_barrier);
+    vkCmdCopyImage(self->py_device->command_buffer, src_resource->image,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, self->images[index],
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &image_copy);
+    image_memory_barrier[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    image_memory_barrier[0].newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    image_memory_barrier[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    image_memory_barrier[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    vkCmdPipelineBarrier(self->py_device->command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, 0, 0, 0, 2, image_memory_barrier);
+    vkEndCommandBuffer(self->py_device->command_buffer);
+
+    VkPipelineStageFlags flags = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.pCommandBuffers = &self->py_device->command_buffer;
+    submit_info.commandBufferCount = 1;
+    submit_info.pWaitSemaphores = &self->copy_semaphore;
+    submit_info.waitSemaphoreCount = 1;
+    submit_info.pWaitDstStageMask = &flags;
+    submit_info.signalSemaphoreCount = 1;
+    submit_info.pSignalSemaphores = &self->present_semaphore;
+
+    result = vkQueueSubmit(self->py_device->queue, 1, &submit_info, VK_NULL_HANDLE);
+    if (result != VK_SUCCESS)
+        return PyErr_Format(PyExc_Exception, "unable to copy image to Swapchain: %d", result);
+
+    VkPresentInfoKHR present_info = {};
+    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    present_info.pSwapchains = &(self->swapchain);
+    present_info.swapchainCount = 1;
+    present_info.pImageIndices = &index;
+    present_info.waitSemaphoreCount = 1;
+    present_info.pWaitSemaphores = &(self->present_semaphore);
+
+    result = vkQueuePresentKHR(self->py_device->queue, &present_info);
+
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+        return PyErr_Format(PyExc_Exception, "unable to present Swapchain: %d", result);
+
+    self->suboptimal = (result == VK_SUBOPTIMAL_KHR);
+
+    Py_BEGIN_ALLOW_THREADS;
+    vkQueueWaitIdle(self->py_device->queue);
+    Py_END_ALLOW_THREADS;
+
+    Py_RETURN_NONE;
+}
 
 static PyMethodDef vulkan_Swapchain_methods[] = {
     {"present", (PyCFunction)vulkan_Swapchain_present, METH_VARARGS,
@@ -3407,116 +3514,6 @@ static PyMethodDef vulkan_Resource_methods[] = {
     {"bind_tile", (PyCFunction)vulkan_Resource_bind_tile, METH_VARARGS, "Bind a sparse resource tile to a heap"},
     {NULL, NULL, 0, NULL} /* Sentinel */
 };
-
-static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args)
-{
-    PyObject *py_resource;
-    uint32_t x;
-    uint32_t y;
-    if (!PyArg_ParseTuple(args, "OII", &py_resource, &x, &y))
-        return NULL;
-
-    int ret = PyObject_IsInstance(py_resource, (PyObject *)&vulkan_Resource_Type);
-    if (ret < 0)
-        return NULL;
-    if (ret == 0)
-        return PyErr_Format(PyExc_ValueError, "Expected a Resource object");
-    vulkan_Resource *src_resource = (vulkan_Resource *)py_resource;
-    if (!src_resource->image)
-        return PyErr_Format(PyExc_ValueError, "Expected a Texture object");
-
-    uint32_t index = 0;
-    VkResult result = vkAcquireNextImageKHR(self->py_device->device, self->swapchain, UINT64_MAX,
-                                            self->copy_semaphore, VK_NULL_HANDLE, &index);
-    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
-    {
-        return PyErr_Format(PyExc_Exception, "unable to acquire next image from Swapchain (VkResult=%d)", result);
-    }
-    self->suboptimal = (result == VK_SUBOPTIMAL_KHR);
-
-    x = Py_MIN(x, self->image_extent.width - 1);
-    y = Py_MIN(y, self->image_extent.height - 1);
-
-    VkCommandBufferBeginInfo begin_info = {};
-    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-    VkImageMemoryBarrier image_memory_barrier[2] = {};
-    image_memory_barrier[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    image_memory_barrier[0].image = self->images[index];
-    image_memory_barrier[0].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    image_memory_barrier[0].subresourceRange.levelCount = 1;
-    image_memory_barrier[0].subresourceRange.layerCount = 1;
-    image_memory_barrier[0].oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    image_memory_barrier[0].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    image_memory_barrier[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    image_memory_barrier[1].image = src_resource->image;
-    image_memory_barrier[1].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    image_memory_barrier[1].subresourceRange.levelCount = 1;
-    image_memory_barrier[1].subresourceRange.layerCount = 1;
-    image_memory_barrier[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-    image_memory_barrier[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-
-    VkImageCopy image_copy = {};
-    image_copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    image_copy.srcSubresource.layerCount = 1;
-    image_copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    image_copy.dstSubresource.layerCount = 1;
-    image_copy.extent.width = Py_MIN(src_resource->image_extent.width, self->image_extent.width - x);
-    image_copy.extent.height = Py_MIN(src_resource->image_extent.height, self->image_extent.height - y);
-    image_copy.extent.depth = 1;
-    image_copy.dstOffset.x = x;
-    image_copy.dstOffset.y = y;
-
-    vkBeginCommandBuffer(self->py_device->command_buffer, &begin_info);
-    vkCmdPipelineBarrier(self->py_device->command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, 0, 0, 0, 2, image_memory_barrier);
-    vkCmdCopyImage(self->py_device->command_buffer, src_resource->image,
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, self->images[index],
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &image_copy);
-    image_memory_barrier[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    image_memory_barrier[0].newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-    image_memory_barrier[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    image_memory_barrier[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-    vkCmdPipelineBarrier(self->py_device->command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, 0, 0, 0, 2, image_memory_barrier);
-    vkEndCommandBuffer(self->py_device->command_buffer);
-
-    VkPipelineStageFlags flags = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    VkSubmitInfo submit_info = {};
-    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit_info.pCommandBuffers = &self->py_device->command_buffer;
-    submit_info.commandBufferCount = 1;
-    submit_info.pWaitSemaphores = &self->copy_semaphore;
-    submit_info.waitSemaphoreCount = 1;
-    submit_info.pWaitDstStageMask = &flags;
-    submit_info.signalSemaphoreCount = 1;
-    submit_info.pSignalSemaphores = &self->present_semaphore;
-
-    result = vkQueueSubmit(self->py_device->queue, 1, &submit_info, VK_NULL_HANDLE);
-    if (result != VK_SUCCESS)
-        return PyErr_Format(PyExc_Exception, "unable to copy image to Swapchain: %d", result);
-
-    VkPresentInfoKHR present_info = {};
-    present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-    present_info.pSwapchains = &(self->swapchain);
-    present_info.swapchainCount = 1;
-    present_info.pImageIndices = &index;
-    present_info.waitSemaphoreCount = 1;
-    present_info.pWaitSemaphores = &(self->present_semaphore);
-
-    result = vkQueuePresentKHR(self->py_device->queue, &present_info);
-
-    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
-        return PyErr_Format(PyExc_Exception, "unable to present Swapchain: %d", result);
-
-    self->suboptimal = (result == VK_SUBOPTIMAL_KHR);
-
-    Py_BEGIN_ALLOW_THREADS;
-    vkQueueWaitIdle(self->py_device->queue);
-    Py_END_ALLOW_THREADS;
-
-    Py_RETURN_NONE;
-}
 
 static PyObject *vulkan_Compute_dispatch(vulkan_Compute *self, PyObject *args)
 {
