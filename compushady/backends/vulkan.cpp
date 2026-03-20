@@ -127,6 +127,7 @@ typedef struct vulkan_Swapchain
     std::vector<VkImage> images;
     VkExtent2D image_extent;
     bool suboptimal;
+    bool out_of_date;
 } vulkan_Swapchain;
 
 typedef struct vulkan_Sampler
@@ -512,6 +513,22 @@ static PyObject* vulkan_Swapchain_is_suboptimal(vulkan_Swapchain* self, PyObject
         Py_RETURN_FALSE;
 }
 
+static PyObject* vulkan_Swapchain_is_out_of_date(vulkan_Swapchain* self, PyObject* Py_UNUSED(ignored))
+{
+    if (self->out_of_date)
+        Py_RETURN_TRUE;
+    else
+        Py_RETURN_FALSE;
+}
+
+static PyObject* vulkan_Swapchain_needs_recreation(vulkan_Swapchain* self, PyObject* Py_UNUSED(ignored))
+{
+    if (self->suboptimal || self->out_of_date)
+        Py_RETURN_TRUE;
+    else
+        Py_RETURN_FALSE;
+}
+
 static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args)
 {
     PyObject *py_resource;
@@ -532,11 +549,12 @@ static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args
     uint32_t index = 0;
     VkResult result = vkAcquireNextImageKHR(self->py_device->device, self->swapchain, UINT64_MAX,
                                             self->copy_semaphore, VK_NULL_HANDLE, &index);
-    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR && result != VK_ERROR_OUT_OF_DATE_KHR)
     {
         return PyErr_Format(PyExc_Exception, "unable to acquire next image from Swapchain (VkResult=%d)", result);
     }
     self->suboptimal = (result == VK_SUBOPTIMAL_KHR);
+    self->out_of_date = (result == VK_ERROR_OUT_OF_DATE_KHR);
 
     x = Py_MIN(x, self->image_extent.width - 1);
     y = Py_MIN(y, self->image_extent.height - 1);
@@ -614,6 +632,7 @@ static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args
         return PyErr_Format(PyExc_Exception, "unable to present Swapchain: %d", result);
 
     self->suboptimal = (result == VK_SUBOPTIMAL_KHR);
+    self->out_of_date = (result == VK_ERROR_OUT_OF_DATE_KHR);
 
     Py_BEGIN_ALLOW_THREADS;
     vkQueueWaitIdle(self->py_device->queue);
@@ -627,6 +646,10 @@ static PyMethodDef vulkan_Swapchain_methods[] = {
      "Blit a texture resource to the Swapchain and present it"},
     {"is_suboptimal", (PyCFunction)vulkan_Swapchain_is_suboptimal, METH_NOARGS,
      "Return True if the swapchain is suboptimal."},
+    {"is_out_of_date", (PyCFunction)vulkan_Swapchain_is_out_of_date, METH_NOARGS,
+     "Return True if the swapchain is out of date."},
+    {"needs_recreation", (PyCFunction)vulkan_Swapchain_needs_recreation, METH_NOARGS,
+     "Return True if the swapchain needs to be recreated (suboptimal or out-of-date)."},
     {NULL, NULL, 0, NULL} /* Sentinel */
 };
 
@@ -2666,10 +2689,9 @@ static PyObject *vulkan_Device_create_swapchain(vulkan_Device *self, PyObject *a
 
     vulkan_Swapchain *py_swapchain = (vulkan_Swapchain *)PyObject_New(vulkan_Swapchain, &vulkan_Swapchain_Type);
     if (!py_swapchain)
-    {
         return PyErr_Format(PyExc_MemoryError, "unable to allocate vulkan Swapchain");
-    }
     py_swapchain->suboptimal = false;
+    py_swapchain->out_of_date = false;
     COMPUSHADY_CLEAR(py_swapchain);
 
     py_swapchain->py_device = py_device;

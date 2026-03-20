@@ -357,8 +357,14 @@ class Swapchain:
     def present(self, resource, x=0, y=0):
         self.handle.present(resource.handle, x, y)
 
-    def is_suboptimal(self):
+    def needs_recreation(self) -> bool:
+        return self.handle.needs_recreation()
+
+    def is_suboptimal(self) -> bool:
         return self.handle.is_suboptimal()
+
+    def is_out_of_date(self) -> bool:
+        return self.handle.is_out_of_date()
 
 
 class Sampler:
