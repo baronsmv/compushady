@@ -512,6 +512,9 @@ static PyObject* vulkan_Swapchain_is_suboptimal(vulkan_Swapchain* self, PyObject
         Py_RETURN_FALSE;
 }
 
+
+static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args);
+
 static PyMethodDef vulkan_Swapchain_methods[] = {
     {"present", (PyCFunction)vulkan_Swapchain_present, METH_VARARGS,
      "Blit a texture resource to the Swapchain and present it"},
@@ -597,8 +600,6 @@ static PyTypeObject vulkan_Sampler_Type = {
     Py_TPFLAGS_DEFAULT,                                                  /* tp_flags */
     "compushady vulkan Sampler",                                         /* tp_doc */
 };
-
-static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args);
 
 static PyMemberDef vulkan_Device_members[] = {
     {"name", T_OBJECT_EX, offsetof(vulkan_Device, name), 0, "device name/description"},
