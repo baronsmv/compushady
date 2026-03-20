@@ -126,6 +126,7 @@ typedef struct vulkan_Swapchain
     VkSurfaceKHR surface;
     std::vector<VkImage> images;
     VkExtent2D image_extent;
+    bool suboptimal;
 } vulkan_Swapchain;
 
 typedef struct vulkan_Sampler
@@ -501,6 +502,22 @@ static PyTypeObject vulkan_Compute_Type = {
     0,                                                                   /* tp_as_buffer */
     Py_TPFLAGS_DEFAULT,                                                  /* tp_flags */
     "compushady vulkan Compute",                                         /* tp_doc */
+};
+
+static PyObject* vulkan_Swapchain_is_suboptimal(vulkan_Swapchain* self, PyObject* Py_UNUSED(ignored))
+{
+    if (self->suboptimal)
+        Py_RETURN_TRUE;
+    else
+        Py_RETURN_FALSE;
+}
+
+static PyMethodDef vulkan_Swapchain_methods[] = {
+    {"present", (PyCFunction)vulkan_Swapchain_present, METH_VARARGS,
+     "Blit a texture resource to the Swapchain and present it"},
+    {"is_suboptimal", (PyCFunction)vulkan_Swapchain_is_suboptimal, METH_NOARGS,
+     "Return True if the swapchain is suboptimal."},
+    {NULL, NULL, 0, NULL} /* Sentinel */
 };
 
 static void vulkan_Swapchain_dealloc(vulkan_Swapchain *self)
@@ -2542,6 +2559,7 @@ static PyObject *vulkan_Device_create_swapchain(vulkan_Device *self, PyObject *a
     {
         return PyErr_Format(PyExc_MemoryError, "unable to allocate vulkan Swapchain");
     }
+    py_swapchain->suboptimal = false;
     COMPUSHADY_CLEAR(py_swapchain);
 
     py_swapchain->py_device = py_device;
@@ -3397,26 +3415,21 @@ static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args
 
     int ret = PyObject_IsInstance(py_resource, (PyObject *)&vulkan_Resource_Type);
     if (ret < 0)
-    {
         return NULL;
-    }
-    else if (ret == 0)
-    {
+    if (ret == 0)
         return PyErr_Format(PyExc_ValueError, "Expected a Resource object");
-    }
     vulkan_Resource *src_resource = (vulkan_Resource *)py_resource;
     if (!src_resource->image)
-    {
         return PyErr_Format(PyExc_ValueError, "Expected a Texture object");
-    }
 
     uint32_t index = 0;
     VkResult result = vkAcquireNextImageKHR(self->py_device->device, self->swapchain, UINT64_MAX,
                                             self->copy_semaphore, VK_NULL_HANDLE, &index);
-    if (result != VK_SUCCESS)
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
     {
-        return PyErr_Format(PyExc_Exception, "unable to acquire next image from Swapchain");
+        return PyErr_Format(PyExc_Exception, "unable to acquire next image from Swapchain (VkResult=%d)", result);
     }
+    self->suboptimal = (result == VK_SUBOPTIMAL_KHR);
 
     x = Py_MIN(x, self->image_extent.width - 1);
     y = Py_MIN(y, self->image_extent.height - 1);
@@ -3477,11 +3490,8 @@ static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args
     submit_info.pSignalSemaphores = &self->present_semaphore;
 
     result = vkQueueSubmit(self->py_device->queue, 1, &submit_info, VK_NULL_HANDLE);
-
     if (result != VK_SUCCESS)
-    {
         return PyErr_Format(PyExc_Exception, "unable to copy image to Swapchain: %d", result);
-    }
 
     VkPresentInfoKHR present_info = {};
     present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -3490,24 +3500,20 @@ static PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args
     present_info.pImageIndices = &index;
     present_info.waitSemaphoreCount = 1;
     present_info.pWaitSemaphores = &(self->present_semaphore);
+
     result = vkQueuePresentKHR(self->py_device->queue, &present_info);
 
-    if (result == VK_SUCCESS)
-    {
-        Py_BEGIN_ALLOW_THREADS;
-        vkQueueWaitIdle(self->py_device->queue);
-        Py_END_ALLOW_THREADS;
-        Py_RETURN_NONE;
-    }
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR)
+        return PyErr_Format(PyExc_Exception, "unable to present Swapchain: %d", result);
 
-    return PyErr_Format(PyExc_Exception, "unable to present Swapchain: %d", result);
+    self->suboptimal = (result == VK_SUBOPTIMAL_KHR);
+
+    Py_BEGIN_ALLOW_THREADS;
+    vkQueueWaitIdle(self->py_device->queue);
+    Py_END_ALLOW_THREADS;
+
+    Py_RETURN_NONE;
 }
-
-static PyMethodDef vulkan_Swapchain_methods[] = {
-    {"present", (PyCFunction)vulkan_Swapchain_present, METH_VARARGS,
-     "Blit a texture resource to the Swapchain and present it"},
-    {NULL, NULL, 0, NULL} /* Sentinel */
-};
 
 static PyObject *vulkan_Compute_dispatch(vulkan_Compute *self, PyObject *args)
 {
