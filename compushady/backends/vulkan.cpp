@@ -3515,6 +3515,201 @@ static PyObject *vulkan_Resource_bind_tile(vulkan_Resource *self, PyObject *args
     Py_RETURN_NONE;
 }
 
+static PyObject* vulkan_Resource_download_texture(vulkan_Resource* self, PyObject* Py_UNUSED(ignored))
+{
+    if (!self->image) {
+        PyErr_SetString(PyExc_TypeError, "download() can only be called on a Texture object");
+        return NULL;
+    }
+
+    vulkan_Device* device = self->py_device;
+    VkDeviceSize buffer_size = self->size; // row_pitch * height (already computed)
+
+    // Create a device‑local buffer (TRANSFER_DST | TRANSFER_SRC)
+    VkBuffer device_buffer;
+    VkDeviceMemory device_memory;
+    {
+        VkBufferCreateInfo buffer_info = {};
+        buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buffer_info.size = buffer_size;
+        buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VkResult result = vkCreateBuffer(device->device, &buffer_info, NULL, &device_buffer);
+        if (result != VK_SUCCESS) {
+            PyErr_Format(PyExc_RuntimeError, "Failed to create device buffer: %d", result);
+            return NULL;
+        }
+
+        VkMemoryRequirements mem_req;
+        vkGetBufferMemoryRequirements(device->device, device_buffer, &mem_req);
+
+        VkMemoryAllocateInfo alloc_info = {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize = mem_req.size;
+        alloc_info.memoryTypeIndex = vulkan_get_memory_type_index_by_flag(
+            &device->mem_props, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+        result = vkAllocateMemory(device->device, &alloc_info, NULL, &device_memory);
+        if (result != VK_SUCCESS) {
+            vkDestroyBuffer(device->device, device_buffer, NULL);
+            PyErr_Format(PyExc_RuntimeError, "Failed to allocate device memory: %d", result);
+            return NULL;
+        }
+
+        vkBindBufferMemory(device->device, device_buffer, device_memory, 0);
+    }
+
+    // Create a host‑visible staging buffer
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_memory;
+    {
+        VkBufferCreateInfo buffer_info = {};
+        buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        buffer_info.size = buffer_size;
+        buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VkResult result = vkCreateBuffer(device->device, &buffer_info, NULL, &staging_buffer);
+        if (result != VK_SUCCESS) {
+            vkDestroyBuffer(device->device, device_buffer, NULL);
+            vkFreeMemory(device->device, device_memory, NULL);
+            PyErr_Format(PyExc_RuntimeError, "Failed to create staging buffer: %d", result);
+            return NULL;
+        }
+
+        VkMemoryRequirements mem_req;
+        vkGetBufferMemoryRequirements(device->device, staging_buffer, &mem_req);
+
+        VkMemoryAllocateInfo alloc_info = {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc_info.allocationSize = mem_req.size;
+        alloc_info.memoryTypeIndex = vulkan_get_memory_type_index_by_flag(
+            &device->mem_props,
+            (VkMemoryPropertyFlagBits)(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+
+        result = vkAllocateMemory(device->device, &alloc_info, NULL, &staging_memory);
+        if (result != VK_SUCCESS) {
+            vkDestroyBuffer(device->device, device_buffer, NULL);
+            vkFreeMemory(device->device, device_memory, NULL);
+            vkDestroyBuffer(device->device, staging_buffer, NULL);
+            PyErr_Format(PyExc_RuntimeError, "Failed to allocate staging memory: %d", result);
+            return NULL;
+        }
+
+        vkBindBufferMemory(device->device, staging_buffer, staging_memory, 0);
+    }
+
+    // Record and submit copy commands
+    {
+        VkCommandBufferBeginInfo begin_info = {};
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        vkBeginCommandBuffer(device->command_buffer, &begin_info);
+
+        // Transition image to TRANSFER_SRC_OPTIMAL
+        VkImageMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.image = self->image;
+        barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.layerCount = 1;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+
+        vkCmdPipelineBarrier(device->command_buffer,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &barrier);
+
+        // Copy image to device buffer
+        VkBufferImageCopy region = {};
+        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        region.imageSubresource.layerCount = 1;
+        region.imageExtent = self->image_extent;
+
+        vkCmdCopyImageToBuffer(device->command_buffer,
+                               self->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               device_buffer,
+                               1, &region);
+
+        // Barrier to make device buffer readable as transfer source
+        VkBufferMemoryBarrier buf_barrier = {};
+        buf_barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        buf_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        buf_barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        buf_barrier.buffer = device_buffer;
+        buf_barrier.size = buffer_size;
+
+        vkCmdPipelineBarrier(device->command_buffer,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, NULL, 1, &buf_barrier, 0, NULL);
+
+        // Copy device buffer to staging buffer
+        VkBufferCopy copy_region = {};
+        copy_region.size = buffer_size;
+        vkCmdCopyBuffer(device->command_buffer, device_buffer, staging_buffer, 1, &copy_region);
+
+        // Transition image back to GENERAL
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+
+        vkCmdPipelineBarrier(device->command_buffer,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 0, NULL, 0, NULL, 1, &barrier);
+
+        vkEndCommandBuffer(device->command_buffer);
+
+        VkSubmitInfo submit_info = {};
+        submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &device->command_buffer;
+
+        VkResult result = vkQueueSubmit(device->queue, 1, &submit_info, VK_NULL_HANDLE);
+        if (result != VK_SUCCESS) {
+            vkDestroyBuffer(device->device, device_buffer, NULL);
+            vkFreeMemory(device->device, device_memory, NULL);
+            vkDestroyBuffer(device->device, staging_buffer, NULL);
+            vkFreeMemory(device->device, staging_memory, NULL);
+            PyErr_Format(PyExc_RuntimeError, "Queue submit failed: %d", result);
+            return NULL;
+        }
+
+        Py_BEGIN_ALLOW_THREADS;
+        vkQueueWaitIdle(device->queue);
+        Py_END_ALLOW_THREADS;
+    }
+
+    // Map staging memory and build Python bytes
+    void* mapped;
+    VkResult result = vkMapMemory(device->device, staging_memory, 0, buffer_size, 0, &mapped);
+    if (result != VK_SUCCESS) {
+        vkDestroyBuffer(device->device, device_buffer, NULL);
+        vkFreeMemory(device->device, device_memory, NULL);
+        vkDestroyBuffer(device->device, staging_buffer, NULL);
+        vkFreeMemory(device->device, staging_memory, NULL);
+        PyErr_Format(PyExc_RuntimeError, "Failed to map staging memory: %d", result);
+        return NULL;
+    }
+
+    PyObject* py_bytes = PyBytes_FromStringAndSize((const char*)mapped, buffer_size);
+    vkUnmapMemory(device->device, staging_memory);
+
+    // Cleanup
+    vkDestroyBuffer(device->device, device_buffer, NULL);
+    vkFreeMemory(device->device, device_memory, NULL);
+    vkDestroyBuffer(device->device, staging_buffer, NULL);
+    vkFreeMemory(device->device, staging_memory, NULL);
+
+    return py_bytes;
+}
+
 static PyMethodDef vulkan_Resource_methods[] = {
     {"upload", (PyCFunction)vulkan_Resource_upload, METH_VARARGS,
      "Upload bytes to a GPU Resource"},
@@ -3533,7 +3728,10 @@ static PyMethodDef vulkan_Resource_methods[] = {
      "Readback into a buffer from a GPU Resource"},
     {"copy_to", (PyCFunction)vulkan_Resource_copy_to, METH_VARARGS,
      "Copy resource content to another resource"},
-    {"bind_tile", (PyCFunction)vulkan_Resource_bind_tile, METH_VARARGS, "Bind a sparse resource tile to a heap"},
+    {"bind_tile", (PyCFunction)vulkan_Resource_bind_tile, METH_VARARGS,
+     "Bind a sparse resource tile to a heap"},
+    {"download", (PyCFunction)vulkan_Resource_download_texture, METH_NOARGS,
+     "Download texture data as RGBA8 bytes (lossless)"},
     {NULL, NULL, 0, NULL} /* Sentinel */
 };
 

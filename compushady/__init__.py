@@ -295,6 +295,10 @@ class Texture2D(Resource):
     def row_pitch(self):
         return self.handle.row_pitch
 
+    def download(self):
+        """Return RGBA8 bytes of the texture content."""
+        return self.handle.download()
+
 
 class Texture3D(Resource):
     def __init__(
