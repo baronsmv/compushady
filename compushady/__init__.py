@@ -299,6 +299,10 @@ class Texture2D(Resource):
         """Return RGBA8 bytes of the texture content."""
         return self.handle.download()
 
+    def upload_subresource(self, data, x, y, width, height):
+        """Upload pixel data to a rectangular region of the texture."""
+        self.handle.upload_subresource(data, x, y, width, height)
+
 
 class Texture3D(Resource):
     def __init__(

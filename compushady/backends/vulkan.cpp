@@ -3710,6 +3710,165 @@ static PyObject* vulkan_Resource_download_texture(vulkan_Resource* self, PyObjec
     return py_bytes;
 }
 
+static PyObject *vulkan_Resource_upload_subresource(vulkan_Resource *self, PyObject *args)
+{
+    Py_buffer view;
+    uint32_t x, y, width, height;
+    if (!PyArg_ParseTuple(args, "y*IIII", &view, &x, &y, &width, &height))
+        return NULL;
+
+    if (!self->image) {
+        PyBuffer_Release(&view);
+        PyErr_SetString(PyExc_TypeError, "upload_subresource only supported for textures");
+        return NULL;
+    }
+
+    if (width == 0 || height == 0) {
+        PyBuffer_Release(&view);
+        Py_RETURN_NONE;
+    }
+
+    // Validate that the sub-rectangle fits within the image
+    if (x + width > self->image_extent.width || y + height > self->image_extent.height) {
+        PyBuffer_Release(&view);
+        PyErr_Format(PyExc_ValueError,
+                     "Subresource rectangle (%u,%u %ux%u) exceeds texture dimensions (%ux%u)",
+                     x, y, width, height, self->image_extent.width, self->image_extent.height);
+        return NULL;
+    }
+
+    VkDevice device = self->py_device->device;
+    VkResult result;
+
+    // Create a host-visible staging buffer for the sub-rectangle data
+    VkBuffer staging_buffer;
+    VkDeviceMemory staging_memory;
+
+    VkBufferCreateInfo buffer_info = {};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = width * height * 4; // assuming RGBA8
+    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    result = vkCreateBuffer(device, &buffer_info, NULL, &staging_buffer);
+    if (result != VK_SUCCESS) {
+        PyBuffer_Release(&view);
+        return PyErr_Format(PyExc_RuntimeError, "Failed to create staging buffer: %d", result);
+    }
+
+    VkMemoryRequirements mem_req;
+    vkGetBufferMemoryRequirements(device, staging_buffer, &mem_req);
+
+    VkMemoryAllocateInfo alloc_info = {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    alloc_info.allocationSize = mem_req.size;
+    alloc_info.memoryTypeIndex = vulkan_get_memory_type_index_by_flag(
+        &self->py_device->mem_props,
+        (VkMemoryPropertyFlagBits)(VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+
+    result = vkAllocateMemory(device, &alloc_info, NULL, &staging_memory);
+    if (result != VK_SUCCESS) {
+        vkDestroyBuffer(device, staging_buffer, NULL);
+        PyBuffer_Release(&view);
+        return PyErr_Format(PyExc_RuntimeError, "Failed to allocate staging memory: %d", result);
+    }
+
+    vkBindBufferMemory(device, staging_buffer, staging_memory, 0);
+
+    // Map and copy data
+    void *mapped;
+    result = vkMapMemory(device, staging_memory, 0, buffer_info.size, 0, &mapped);
+    if (result != VK_SUCCESS) {
+        vkDestroyBuffer(device, staging_buffer, NULL);
+        vkFreeMemory(device, staging_memory, NULL);
+        PyBuffer_Release(&view);
+        return PyErr_Format(PyExc_RuntimeError, "Failed to map staging memory: %d", result);
+    }
+    memcpy(mapped, view.buf, view.len);
+    vkUnmapMemory(device, staging_memory);
+    PyBuffer_Release(&view);
+
+    // Record command buffer
+    VkCommandBufferBeginInfo begin_info = {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    vkBeginCommandBuffer(self->py_device->command_buffer, &begin_info);
+
+    // Transition image to TRANSFER_DST_OPTIMAL
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.image = self->image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+    vkCmdPipelineBarrier(self->py_device->command_buffer,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0, 0, NULL, 0, NULL, 1, &barrier);
+
+    // Copy buffer to image subresource
+    VkBufferImageCopy region = {};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;   // tightly packed
+    region.bufferImageHeight = 0;
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+    region.imageOffset.x = x;
+    region.imageOffset.y = y;
+    region.imageOffset.z = 0;
+    region.imageExtent.width = width;
+    region.imageExtent.height = height;
+    region.imageExtent.depth = 1;
+
+    vkCmdCopyBufferToImage(self->py_device->command_buffer,
+                           staging_buffer,
+                           self->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &region);
+
+    // Transition back to GENERAL
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+
+    vkCmdPipelineBarrier(self->py_device->command_buffer,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 0, NULL, 0, NULL, 1, &barrier);
+
+    vkEndCommandBuffer(self->py_device->command_buffer);
+
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.commandBufferCount = 1;
+    submit_info.pCommandBuffers = &self->py_device->command_buffer;
+
+    result = vkQueueSubmit(self->py_device->queue, 1, &submit_info, VK_NULL_HANDLE);
+    if (result != VK_SUCCESS) {
+        vkDestroyBuffer(device, staging_buffer, NULL);
+        vkFreeMemory(device, staging_memory, NULL);
+        return PyErr_Format(PyExc_RuntimeError, "Queue submit failed: %d", result);
+    }
+
+    // Wait for completion
+    Py_BEGIN_ALLOW_THREADS;
+    vkQueueWaitIdle(self->py_device->queue);
+    Py_END_ALLOW_THREADS;
+
+    // Cleanup
+    vkDestroyBuffer(device, staging_buffer, NULL);
+    vkFreeMemory(device, staging_memory, NULL);
+
+    Py_RETURN_NONE;
+}
+
 static PyMethodDef vulkan_Resource_methods[] = {
     {"upload", (PyCFunction)vulkan_Resource_upload, METH_VARARGS,
      "Upload bytes to a GPU Resource"},
@@ -3732,6 +3891,8 @@ static PyMethodDef vulkan_Resource_methods[] = {
      "Bind a sparse resource tile to a heap"},
     {"download", (PyCFunction)vulkan_Resource_download_texture, METH_NOARGS,
      "Download texture data as RGBA8 bytes (lossless)"},
+    {"upload_subresource", (PyCFunction)vulkan_Resource_upload_subresource, METH_VARARGS,
+     "Upload data to a sub-rectangle of a texture"},
     {NULL, NULL, 0, NULL} /* Sentinel */
 };
 
