@@ -8,27 +8,12 @@ on:
 
 jobs:
   build_wheels:
-    name: Build wheel for cp${{ matrix.python }}-${{ matrix.platform }}
-    runs-on: ${{ matrix.os }}
+    name: Build wheel for cp${{ matrix.python }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            platform: manylinux_x86_64
-            python: 39
-          - os: ubuntu-latest
-            platform: manylinux_x86_64
-            python: 310
-          - os: ubuntu-latest
-            platform: manylinux_x86_64
-            python: 311
-          - os: ubuntu-latest
-            platform: manylinux_x86_64
-            python: 312
-          - os: ubuntu-latest
-            platform: manylinux_x86_64
-            python: 313
+        python: [ "310", "311", "312", "313", "314" ]
     steps:
       - uses: actions/checkout@v4
 
@@ -45,14 +30,14 @@ jobs:
           CIBW_BEFORE_ALL_LINUX: >
             yum install -y libX11-devel vulkan-devel || dnf install -y libX11-devel vulkan-devel
           CIBW_ARCHS_LINUX: x86_64
-          CIBW_BUILD: cp${{ matrix.python }}-${{ matrix.platform }}
+          CIBW_BUILD: cp${{ matrix.python }}-*
           CIBW_SKIP: "*-musllinux*"
-          CIBW_BUILD_VERBOSITY: 1
+          CIBW_TEST_COMMAND: "python -c 'import compushady; print(compushady.get_discovered_devices())'"
         run: python -m cibuildwheel --output-dir wheelhouse
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.platform }}-cp${{ matrix.python }}
+          name: wheels-cp${{ matrix.python }}
           path: ./wheelhouse/*.whl
 
   upload_pypi:
