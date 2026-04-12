@@ -89,7 +89,7 @@ vulkan_Device *vulkan_Device_get_device(vulkan_Device *self) {
         for (int i = 0; i < self->buffer_pool_size; i++) {
             // create buffers of a reasonable size (e.g., 256KB)
             VkBufferCreateInfo binfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-            binfo.size = 256 * 1024;
+            binfo.size = 2 * 1024 * 1024;
             binfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
             vkCreateBuffer(device, &binfo, NULL, &self->staging_pool.buffers[i]);
             VkMemoryRequirements req;
@@ -100,7 +100,7 @@ vulkan_Device *vulkan_Device_get_device(vulkan_Device *self) {
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             vkAllocateMemory(device, &alloc, NULL, &self->staging_pool.memories[i]);
             vkBindBufferMemory(device, self->staging_pool.buffers[i], self->staging_pool.memories[i], 0);
-            self->staging_pool.sizes[i] = 256 * 1024;
+            self->staging_pool.sizes[i] = 2 * 1024 * 1024;
         }
     }
 
