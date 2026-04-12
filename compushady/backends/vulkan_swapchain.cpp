@@ -175,9 +175,8 @@ PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args) {
         return PyErr_Format(PyExc_RuntimeError, "Present failed: %d", res);
     }
 
-    if (!self->async_present_enabled) {
-        vkWaitForFences(dev->device, 1, &fence, VK_TRUE, UINT64_MAX);
-    }
+    // Always wait synchronously
+    vkWaitForFences(dev->device, 1, &fence, VK_TRUE, UINT64_MAX);
 
     Py_RETURN_NONE;
 }

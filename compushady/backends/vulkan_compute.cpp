@@ -150,12 +150,11 @@ PyObject *vulkan_Compute_dispatch_indirect(vulkan_Compute *self, PyObject *args)
         return PyErr_Format(PyExc_Exception, "unable to submit to Queue");
     }
 
-    if (!self->py_device->async_compute_enabled) {
-        Py_BEGIN_ALLOW_THREADS;
-        vkWaitForFences(self->py_device->device, 1, &self->dispatch_fence, VK_TRUE, UINT64_MAX);
-        vkResetFences(self->py_device->device, 1, &self->dispatch_fence);
-        Py_END_ALLOW_THREADS;
-    }
+    // Always wait synchronously
+    Py_BEGIN_ALLOW_THREADS;
+    vkWaitForFences(self->py_device->device, 1, &self->dispatch_fence, VK_TRUE, UINT64_MAX);
+    vkResetFences(self->py_device->device, 1, &self->dispatch_fence);
+    Py_END_ALLOW_THREADS;
 
     if (push.buf) PyBuffer_Release(&push);
     Py_RETURN_NONE;

@@ -55,7 +55,6 @@ typedef struct vulkan_Device {
     VkPhysicalDeviceFeatures features;
     bool supports_bindless;
     bool supports_sparse;
-    int async_compute_enabled;
     int buffer_pool_size;
     struct {
         VkBuffer *buffers;
@@ -129,8 +128,6 @@ typedef struct vulkan_Swapchain {
     VkFormat format;
     bool suboptimal;
     bool out_of_date;
-    bool async_compute;
-    int async_present_enabled;
     VkFence *fences;
 } vulkan_Swapchain;
 

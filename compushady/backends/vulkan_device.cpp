@@ -852,9 +852,8 @@ PyObject *vulkan_Device_create_swapchain(vulkan_Device *self, PyObject *args) {
     uint32_t num_buffers;
     uint32_t width = 0, height = 0;
     const char *present_mode_str = "fifo";
-    int async_present = 0;
-    if (!PyArg_ParseTuple(args, "OiI|IIsp", &py_window_handle, &format, &num_buffers,
-                          &width, &height, &present_mode_str, &async_present))
+    if (!PyArg_ParseTuple(args, "OiI|IIs", &py_window_handle, &format, &num_buffers,
+                          &width, &height, &present_mode_str))
         return NULL;
 
     if (vulkan_formats.find(format) == vulkan_formats.end())
@@ -875,7 +874,6 @@ PyObject *vulkan_Device_create_swapchain(vulkan_Device *self, PyObject *args) {
     Py_INCREF(py_device);
     sc->suboptimal = false;
     sc->out_of_date = false;
-    sc->async_compute = false;
     sc->image_count = 0;
 
     VkResult result;
@@ -1041,17 +1039,6 @@ static void vulkan_Device_dealloc(vulkan_Device *self) {
 }
 
 /* ----------------------------------------------------------------------------
-   vulkan_Device_set_async_compute
-   ------------------------------------------------------------------------- */
-PyObject *vulkan_Device_set_async_compute(vulkan_Device *self, PyObject *args) {
-    int enabled;
-    if (!PyArg_ParseTuple(args, "p", &enabled))
-        return NULL;
-    self->async_compute_enabled = enabled;
-    Py_RETURN_NONE;
-}
-
-/* ----------------------------------------------------------------------------
    vulkan_Device_set_buffer_pool_size
    ------------------------------------------------------------------------- */
 PyObject *vulkan_Device_set_buffer_pool_size(vulkan_Device *self, PyObject *args) {
@@ -1073,7 +1060,6 @@ static PyMethodDef vulkan_Device_methods[] = {
     {"create_compute", (PyCFunction)vulkan_Device_create_compute, METH_VARARGS | METH_KEYWORDS, NULL},
     {"create_swapchain", (PyCFunction)vulkan_Device_create_swapchain, METH_VARARGS, NULL},
     {"get_debug_messages", (PyCFunction)vulkan_Device_get_debug_messages, METH_NOARGS, NULL},
-    {"set_async_compute", (PyCFunction)vulkan_Device_set_async_compute, METH_VARARGS, NULL},
     {"set_buffer_pool_size", (PyCFunction)vulkan_Device_set_buffer_pool_size, METH_VARARGS, NULL},
     {NULL}
 };

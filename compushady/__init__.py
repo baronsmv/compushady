@@ -100,11 +100,9 @@ def get_best_device():
     )[-1]
 
 
-def configure_device(async_compute=False, buffer_pool_size=0):
+def configure_device(buffer_pool_size=0):
     """Set performance options on the current Vulkan device."""
     dev = get_current_device()
-    if async_compute:
-        dev.set_async_compute(True)
     if buffer_pool_size:
         dev.set_buffer_pool_size(buffer_pool_size)
 
@@ -364,7 +362,6 @@ class Swapchain:
         width=0,
         height=0,
         present_mode="fifo",
-        async_present=False,
     ):
         self.device = device if device else get_current_device()
         self.handle = self.device.create_swapchain(
@@ -374,7 +371,6 @@ class Swapchain:
             width,
             height,
             present_mode,
-            async_present,
         )
 
     @property
