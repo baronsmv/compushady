@@ -911,6 +911,55 @@ PyObject *vulkan_Device_create_swapchain(vulkan_Device *self, PyObject *args) {
     if (width) extent.width = width;
     if (height) extent.height = height;
 
+    VkPresentModeKHR desired_mode;
+    if (strcmp(present_mode_str, "immediate") == 0) {
+        desired_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    } else if (strcmp(present_mode_str, "mailbox") == 0) {
+        desired_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+    } else if (strcmp(present_mode_str, "fifo") == 0) {
+        desired_mode = VK_PRESENT_MODE_FIFO_KHR;
+    } else {
+        PyErr_Format(Compushady_SwapchainError,
+                     "Invalid present_mode: '%s'. Must be 'fifo', 'mailbox', or 'immediate'.",
+                     present_mode_str);
+        Py_DECREF(sc);
+        return NULL;
+    }
+
+    // Query available present modes for this surface
+    uint32_t present_mode_count = 0;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(self->physical_device, sc->surface,
+                                              &present_mode_count, NULL);
+    VkPresentModeKHR *available_modes = (VkPresentModeKHR*)PyMem_Malloc(
+        present_mode_count * sizeof(VkPresentModeKHR));
+    if (!available_modes) {
+        Py_DECREF(sc);
+        return PyErr_NoMemory();
+    }
+    vkGetPhysicalDeviceSurfacePresentModesKHR(self->physical_device, sc->surface,
+                                              &present_mode_count, available_modes);
+
+    // Check if desired mode is supported; fallback to FIFO if not
+    bool supported_mode = false;
+    for (uint32_t i = 0; i < present_mode_count; i++) {
+        if (available_modes[i] == desired_mode) {
+            supported_mode = true;
+            break;
+        }
+    }
+    VkPresentModeKHR selected_mode = supported_mode ? desired_mode
+                                                    : VK_PRESENT_MODE_FIFO_KHR;
+    PyMem_Free(available_modes);
+
+    // Optional: log a debug message if falling back
+    if (!supported_mode && vulkan_debug) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "[Compushady] Present mode '%s' not supported, falling back to FIFO",
+                 present_mode_str);
+        vulkan_debug_messages.push_back(msg);
+    }
+
     VkSwapchainCreateInfoKHR swapchain_info = { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
     swapchain_info.surface = sc->surface;
     swapchain_info.minImageCount = num_buffers;
@@ -921,7 +970,7 @@ PyObject *vulkan_Device_create_swapchain(vulkan_Device *self, PyObject *args) {
     swapchain_info.imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     swapchain_info.preTransform = caps.currentTransform;
     swapchain_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
-    swapchain_info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    swapchain_info.presentMode = selected_mode;
     swapchain_info.clipped = VK_TRUE;
 
     result = vkCreateSwapchainKHR(py_device->device, &swapchain_info, NULL, &sc->swapchain);
