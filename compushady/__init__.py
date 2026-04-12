@@ -100,6 +100,15 @@ def get_best_device():
     )[-1]
 
 
+def configure_device(async_compute=False, buffer_pool_size=0):
+    """Set performance options on the current Vulkan device."""
+    dev = get_current_device()
+    if async_compute:
+        dev.set_async_compute(True)
+    if buffer_pool_size:
+        dev.set_buffer_pool_size(buffer_pool_size)
+
+
 class Resource:
     def copy_to(
         self,
@@ -347,11 +356,25 @@ class Texture3D(Resource):
 
 class Swapchain:
     def __init__(
-        self, window_handle, format, num_buffers=3, device=None, width=0, height=0
+        self,
+        window_handle,
+        format,
+        num_buffers=3,
+        device=None,
+        width=0,
+        height=0,
+        present_mode="fifo",
+        async_present=False,
     ):
         self.device = device if device else get_current_device()
         self.handle = self.device.create_swapchain(
-            window_handle, format, num_buffers, width, height
+            window_handle,
+            format,
+            num_buffers,
+            width,
+            height,
+            present_mode,
+            async_present,
         )
 
     @property

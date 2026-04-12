@@ -5,12 +5,13 @@
    ------------------------------------------------------------------------- */
 static void vulkan_Compute_dealloc(vulkan_Compute *self) {
     if (self->py_device) {
-        VkDevice dev = self->py_device->device;
-        if (self->pipeline) vkDestroyPipeline(dev, self->pipeline, NULL);
-        if (self->pipeline_layout) vkDestroyPipelineLayout(dev, self->pipeline_layout, NULL);
-        if (self->descriptor_pool) vkDestroyDescriptorPool(dev, self->descriptor_pool, NULL);
-        if (self->descriptor_set_layout) vkDestroyDescriptorSetLayout(dev, self->descriptor_set_layout, NULL);
-        if (self->shader_module) vkDestroyShaderModule(dev, self->shader_module, NULL);
+        VkDevice device = self->py_device->device;
+        if (self->pipeline) vkDestroyPipeline(device, self->pipeline, NULL);
+        if (self->pipeline_layout) vkDestroyPipelineLayout(device, self->pipeline_layout, NULL);
+        if (self->descriptor_pool) vkDestroyDescriptorPool(device, self->descriptor_pool, NULL);
+        if (self->descriptor_set_layout) vkDestroyDescriptorSetLayout(device, self->descriptor_set_layout, NULL);
+        if (self->shader_module) vkDestroyShaderModule(device, self->shader_module, NULL);
+        if (self->dispatch_fence) vkDestroyFence(device, self->dispatch_fence, NULL);
         Py_DECREF(self->py_device);
     }
     Py_XDECREF(self->py_cbv_list);
@@ -138,12 +139,25 @@ PyObject *vulkan_Compute_dispatch_indirect(vulkan_Compute *self, PyObject *args)
     vkCmdDispatchIndirect(cmd, indirect->buffer, offset);
     vkEndCommandBuffer(cmd);
 
+    VkSubmitInfo submit_info = {};
+    submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit_info.pCommandBuffers = &self->py_device->command_buffer;
+    submit_info.commandBufferCount = 1;
+
+    VkResult result = vkQueueSubmit(self->py_device->queue, 1, &submit_info, self->dispatch_fence);
+    if (result != VK_SUCCESS) {
+        if (push.buf) PyBuffer_Release(&push);
+        return PyErr_Format(PyExc_Exception, "unable to submit to Queue");
+    }
+
+    if (!self->py_device->async_compute_enabled) {
+        Py_BEGIN_ALLOW_THREADS;
+        vkWaitForFences(self->py_device->device, 1, &self->dispatch_fence, VK_TRUE, UINT64_MAX);
+        vkResetFences(self->py_device->device, 1, &self->dispatch_fence);
+        Py_END_ALLOW_THREADS;
+    }
+
     if (push.buf) PyBuffer_Release(&push);
-
-    VkResult res = submit_and_wait(dev, cmd);
-    if (res != VK_SUCCESS)
-        return PyErr_Format(PyExc_RuntimeError, "Indirect dispatch submission failed: %d", res);
-
     Py_RETURN_NONE;
 }
 

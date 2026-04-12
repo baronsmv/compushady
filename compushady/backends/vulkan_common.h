@@ -55,6 +55,15 @@ typedef struct vulkan_Device {
     VkPhysicalDeviceFeatures features;
     bool supports_bindless;
     bool supports_sparse;
+    int async_compute_enabled;
+    int buffer_pool_size;
+    struct {
+        VkBuffer *buffers;
+        VkDeviceMemory *memories;
+        VkDeviceSize *sizes;
+        int count;
+        int next;
+    } staging_pool;
 } vulkan_Device;
 
 typedef struct vulkan_Heap {
@@ -104,6 +113,7 @@ typedef struct vulkan_Compute {
     PyObject *py_samplers_list;
     uint32_t push_constant_size;
     uint32_t bindless;
+    VkFence dispatch_fence;
 } vulkan_Compute;
 
 typedef struct vulkan_Swapchain {
@@ -120,6 +130,8 @@ typedef struct vulkan_Swapchain {
     bool suboptimal;
     bool out_of_date;
     bool async_compute;
+    int async_present_enabled;
+    VkFence *fences;
 } vulkan_Swapchain;
 
 typedef struct vulkan_Sampler {

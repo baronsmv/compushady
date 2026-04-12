@@ -35,6 +35,12 @@ static void vulkan_Swapchain_dealloc(vulkan_Swapchain *self) {
         if (self->present_semaphore) vkDestroySemaphore(dev, self->present_semaphore, NULL);
         if (self->swapchain) vkDestroySwapchainKHR(dev, self->swapchain, NULL);
         if (self->surface) vkDestroySurfaceKHR(vulkan_instance, self->surface, NULL);
+        if (self->fences) {
+            for (uint32_t i = 0; i < self->image_count; i++) {
+                if (self->fences[i]) vkDestroyFence(dev, self->fences[i], NULL);
+            }
+            PyMem_Free(self->fences);
+        }
         Py_DECREF(self->py_device);
     }
     self->images.~vector<VkImage>();
@@ -136,7 +142,7 @@ PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args) {
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 2, barriers);
 
-    vkEndCommandBuffer(cmd);
+        vkEndCommandBuffer(cmd);
 
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
@@ -148,7 +154,9 @@ PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args) {
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &self->present_semaphore;
 
-    res = vkQueueSubmit(dev->queue, 1, &submit, VK_NULL_HANDLE);
+    VkFence fence = self->fences[image_index];
+    vkResetFences(dev->device, 1, &fence);
+    res = vkQueueSubmit(dev->queue, 1, &submit, fence);
     if (res != VK_SUCCESS)
         return PyErr_Format(PyExc_RuntimeError, "Queue submit failed: %d", res);
 
@@ -167,10 +175,8 @@ PyObject *vulkan_Swapchain_present(vulkan_Swapchain *self, PyObject *args) {
         return PyErr_Format(PyExc_RuntimeError, "Present failed: %d", res);
     }
 
-    if (!self->async_compute) {
-        Py_BEGIN_ALLOW_THREADS;
-        vkQueueWaitIdle(dev->queue);
-        Py_END_ALLOW_THREADS;
+    if (!self->async_present_enabled) {
+        vkWaitForFences(dev->device, 1, &fence, VK_TRUE, UINT64_MAX);
     }
 
     Py_RETURN_NONE;

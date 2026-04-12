@@ -79,6 +79,31 @@ vulkan_Device *vulkan_Device_get_device(vulkan_Device *self) {
     ainfo.commandBufferCount = 1;
     vkAllocateCommandBuffers(device, &ainfo, &self->command_buffer);
 
+        // Initialize staging buffer pool if requested
+    if (self->buffer_pool_size > 0) {
+        self->staging_pool.count = self->buffer_pool_size;
+        self->staging_pool.buffers = (VkBuffer*)PyMem_Malloc(sizeof(VkBuffer) * self->buffer_pool_size);
+        self->staging_pool.memories = (VkDeviceMemory*)PyMem_Malloc(sizeof(VkDeviceMemory) * self->buffer_pool_size);
+        self->staging_pool.sizes = (VkDeviceSize*)PyMem_Malloc(sizeof(VkDeviceSize) * self->buffer_pool_size);
+        self->staging_pool.next = 0;
+        for (int i = 0; i < self->buffer_pool_size; i++) {
+            // create buffers of a reasonable size (e.g., 256KB)
+            VkBufferCreateInfo binfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            binfo.size = 256 * 1024;
+            binfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+            vkCreateBuffer(device, &binfo, NULL, &self->staging_pool.buffers[i]);
+            VkMemoryRequirements req;
+            vkGetBufferMemoryRequirements(device, self->staging_pool.buffers[i], &req);
+            VkMemoryAllocateInfo alloc = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+            alloc.allocationSize = req.size;
+            alloc.memoryTypeIndex = vulkan_get_memory_type_index_by_flag(&self->mem_props,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            vkAllocateMemory(device, &alloc, NULL, &self->staging_pool.memories[i]);
+            vkBindBufferMemory(device, self->staging_pool.buffers[i], self->staging_pool.memories[i], 0);
+            self->staging_pool.sizes[i] = 256 * 1024;
+        }
+    }
+
     return self;
 }
 
@@ -640,6 +665,14 @@ PyObject *vulkan_Device_create_compute(vulkan_Device *self, PyObject *args, PyOb
     comp->push_constant_size = push_size;
     comp->bindless = bindless;
 
+    // Create dispatch fence
+    VkFenceCreateInfo finfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    if (vkCreateFence(py_device->device, &finfo, NULL, &comp->dispatch_fence) != VK_SUCCESS) {
+        vkDestroyShaderModule(py_device->device, shader_module, NULL);
+        Py_DECREF(comp);
+        return PyErr_Format(Compushady_ComputeError, "Failed to create dispatch fence");
+    }
+
     // Descriptor set layout
     VkDescriptorSetLayoutCreateInfo dsl_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     dsl_info.bindingCount = (uint32_t)layout_bindings.size();
@@ -818,7 +851,10 @@ PyObject *vulkan_Device_create_swapchain(vulkan_Device *self, PyObject *args) {
     int format;
     uint32_t num_buffers;
     uint32_t width = 0, height = 0;
-    if (!PyArg_ParseTuple(args, "OiI|II", &py_window_handle, &format, &num_buffers, &width, &height))
+    const char *present_mode_str = "fifo";
+    int async_present = 0;
+    if (!PyArg_ParseTuple(args, "OiI|IIsp", &py_window_handle, &format, &num_buffers,
+                          &width, &height, &present_mode_str, &async_present))
         return NULL;
 
     if (vulkan_formats.find(format) == vulkan_formats.end())
@@ -895,10 +931,17 @@ PyObject *vulkan_Device_create_swapchain(vulkan_Device *self, PyObject *args) {
         return PyErr_Format(Compushady_SwapchainError, "Failed to create swapchain");
     }
 
-    vkGetSwapchainImagesKHR(py_device->device, sc->swapchain, &sc->image_count, NULL);
+        vkGetSwapchainImagesKHR(py_device->device, sc->swapchain, &sc->image_count, NULL);
     sc->images.resize(sc->image_count);
     vkGetSwapchainImagesKHR(py_device->device, sc->swapchain, &sc->image_count, sc->images.data());
     sc->image_extent = extent;
+
+    // Allocate fences
+    sc->fences = (VkFence*)PyMem_Malloc(sizeof(VkFence) * sc->image_count);
+    VkFenceCreateInfo finfo = { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    for (uint32_t i = 0; i < sc->image_count; i++) {
+        vkCreateFence(py_device->device, &finfo, NULL, &sc->fences[i]);
+    }
 
     VkSemaphoreCreateInfo sem_info = { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     vkCreateSemaphore(py_device->device, &sem_info, NULL, &sc->copy_semaphore);
@@ -930,6 +973,15 @@ static void vulkan_Device_dealloc(vulkan_Device *self) {
     Py_XDECREF(self->name);
     if (self->device) {
         vkDeviceWaitIdle(self->device);
+        if (self->staging_pool.count > 0) {
+            for (int i = 0; i < self->staging_pool.count; i++) {
+                vkDestroyBuffer(self->device, self->staging_pool.buffers[i], NULL);
+                vkFreeMemory(self->device, self->staging_pool.memories[i], NULL);
+            }
+            PyMem_Free(self->staging_pool.buffers);
+            PyMem_Free(self->staging_pool.memories);
+            PyMem_Free(self->staging_pool.sizes);
+        }
         if (self->command_buffer)
             vkFreeCommandBuffers(self->device, self->command_pool, 1, &self->command_buffer);
         if (self->command_pool)
@@ -937,6 +989,28 @@ static void vulkan_Device_dealloc(vulkan_Device *self) {
         vkDestroyDevice(self->device, NULL);
     }
     Py_TYPE(self)->tp_free((PyObject *)self);
+}
+
+/* ----------------------------------------------------------------------------
+   vulkan_Device_set_async_compute
+   ------------------------------------------------------------------------- */
+PyObject *vulkan_Device_set_async_compute(vulkan_Device *self, PyObject *args) {
+    int enabled;
+    if (!PyArg_ParseTuple(args, "p", &enabled))
+        return NULL;
+    self->async_compute_enabled = enabled;
+    Py_RETURN_NONE;
+}
+
+/* ----------------------------------------------------------------------------
+   vulkan_Device_set_buffer_pool_size
+   ------------------------------------------------------------------------- */
+PyObject *vulkan_Device_set_buffer_pool_size(vulkan_Device *self, PyObject *args) {
+    int size;
+    if (!PyArg_ParseTuple(args, "i", &size))
+        return NULL;
+    self->buffer_pool_size = size;
+    Py_RETURN_NONE;
 }
 
 /* ----------------------------------------------------------------------------
@@ -950,6 +1024,8 @@ static PyMethodDef vulkan_Device_methods[] = {
     {"create_compute", (PyCFunction)vulkan_Device_create_compute, METH_VARARGS | METH_KEYWORDS, NULL},
     {"create_swapchain", (PyCFunction)vulkan_Device_create_swapchain, METH_VARARGS, NULL},
     {"get_debug_messages", (PyCFunction)vulkan_Device_get_debug_messages, METH_NOARGS, NULL},
+    {"set_async_compute", (PyCFunction)vulkan_Device_set_async_compute, METH_VARARGS, NULL},
+    {"set_buffer_pool_size", (PyCFunction)vulkan_Device_set_buffer_pool_size, METH_VARARGS, NULL},
     {NULL}
 };
 

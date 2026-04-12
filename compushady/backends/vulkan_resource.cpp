@@ -513,28 +513,38 @@ PyObject *vulkan_Resource_upload_subresource(vulkan_Resource *self, PyObject *ar
     vulkan_Device *dev = self->py_device;
     VkDeviceSize buf_size = width * height * 4;
 
-    VkBuffer staging_buffer;
-    VkDeviceMemory staging_memory;
-    VkBufferCreateInfo binfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-    binfo.size = buf_size;
-    binfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    if (vkCreateBuffer(dev->device, &binfo, NULL, &staging_buffer) != VK_SUCCESS) {
-        PyBuffer_Release(&view);
-        return PyErr_Format(PyExc_RuntimeError, "Failed to create staging buffer");
-    }
+    VkBuffer staging_buffer = VK_NULL_HANDLE;
+    VkDeviceMemory staging_memory = VK_NULL_HANDLE;
+    int used_pool = 0;
 
-    VkMemoryRequirements mem_req;
-    vkGetBufferMemoryRequirements(dev->device, staging_buffer, &mem_req);
-    VkMemoryAllocateInfo alloc = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
-    alloc.allocationSize = mem_req.size;
-    alloc.memoryTypeIndex = vulkan_get_memory_type_index_by_flag(&dev->mem_props,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (vkAllocateMemory(dev->device, &alloc, NULL, &staging_memory) != VK_SUCCESS) {
-        vkDestroyBuffer(dev->device, staging_buffer, NULL);
-        PyBuffer_Release(&view);
-        return PyErr_Format(PyExc_RuntimeError, "Failed to allocate staging memory");
+    if (dev->staging_pool.count > 0 && buf_size <= dev->staging_pool.sizes[0]) {
+        int idx = dev->staging_pool.next;
+        dev->staging_pool.next = (idx + 1) % dev->staging_pool.count;
+        staging_buffer = dev->staging_pool.buffers[idx];
+        staging_memory = dev->staging_pool.memories[idx];
+        used_pool = 1;
+    } else {
+        VkBufferCreateInfo binfo = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        binfo.size = buf_size;
+        binfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        if (vkCreateBuffer(dev->device, &binfo, NULL, &staging_buffer) != VK_SUCCESS) {
+            PyBuffer_Release(&view);
+            return PyErr_Format(PyExc_RuntimeError, "Failed to create staging buffer");
+        }
+
+        VkMemoryRequirements mem_req;
+        vkGetBufferMemoryRequirements(dev->device, staging_buffer, &mem_req);
+        VkMemoryAllocateInfo alloc = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+        alloc.allocationSize = mem_req.size;
+        alloc.memoryTypeIndex = vulkan_get_memory_type_index_by_flag(&dev->mem_props,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (vkAllocateMemory(dev->device, &alloc, NULL, &staging_memory) != VK_SUCCESS) {
+            vkDestroyBuffer(dev->device, staging_buffer, NULL);
+            PyBuffer_Release(&view);
+            return PyErr_Format(PyExc_RuntimeError, "Failed to allocate staging memory");
+        }
+        vkBindBufferMemory(dev->device, staging_buffer, staging_memory, 0);
     }
-    vkBindBufferMemory(dev->device, staging_buffer, staging_memory, 0);
 
     void *mapped;
     VkResult res = vkMapMemory(dev->device, staging_memory, 0, buf_size, 0, &mapped);
@@ -582,8 +592,10 @@ PyObject *vulkan_Resource_upload_subresource(vulkan_Resource *self, PyObject *ar
     vkEndCommandBuffer(cmd);
 
     res = submit_and_wait(dev, cmd);
-    vkDestroyBuffer(dev->device, staging_buffer, NULL);
-    vkFreeMemory(dev->device, staging_memory, NULL);
+    if (!used_pool) {
+        vkDestroyBuffer(dev->device, staging_buffer, NULL);
+        vkFreeMemory(dev->device, staging_memory, NULL);
+    }
 
     if (res != VK_SUCCESS)
         return PyErr_Format(PyExc_RuntimeError, "Upload submission failed");
