@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "compushady-lrtu"
-version = "0.17.5.post6"
-description = "GPU Compute module (Vulkan/Linux only)"
+version = "0.18.0"
+description = "GPU Compute module (Vulkan/Linux fork)"
 authors = [{ name = "Roberto De Ioris", email = "roberto.deioris@gmail.com" }]
 readme = "README.md"
 requires-python = ">=3.8"
