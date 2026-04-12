@@ -1,7 +1,9 @@
-include compushady/backends/*.h
-include compushady/backends/*.m
-include compushady/backends/spirv_cross/*.hpp
-include compushady/backends/spirv_cross/*.h
-include compushady/backends/*.dll
-include compushady/backends/*.so.*
-include compushady/backends/*.dylib
+recursive-include compushady/backends *.cpp *.h
+
+include compushady/backends/libdxcompiler_x86_64.so
+include compushady/backends/libdxcompiler_aarch64.so
+include compushady/backends/libdxcompiler_armhf.so
+
+global-exclude *.so
+global-exclude *.pyc
+global-exclude __pycache__

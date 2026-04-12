@@ -29,7 +29,7 @@ vulkan_sources = [
     "compushady/backends/common.cpp",
 ]
 
-# DXC extension – unchanged
+# DXC extension
 dxc_sources = [
     "compushady/backends/dxc.cpp",
     "compushady/backends/common.cpp",
@@ -40,7 +40,7 @@ backends = [
         "compushady.backends.vulkan",
         sources=vulkan_sources,
         libraries=["vulkan"],
-        extra_compile_args=["-std=c++14", "-O3", "-march=native"],
+        extra_compile_args=["-std=c++14", "-O3", "-mtune=generic"],
         depends=[
             "compushady/backends/vulkan_common.h",
             "compushady/backends/compushady.h",

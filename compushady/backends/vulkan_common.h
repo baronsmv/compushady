@@ -1,8 +1,8 @@
 #ifndef VULKAN_COMMON_H
 #define VULKAN_COMMON_H
 
-#include "structmember.h"
 #include <Python.h>
+#include "structmember.h"
 #include <X11/Xlib.h>
 #include <string>
 #include <unordered_map>

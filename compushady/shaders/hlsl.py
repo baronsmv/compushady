@@ -1,40 +1,32 @@
-from compushady.backends import dxc
-from compushady import get_backend, SHADER_BINARY_TYPE_MSL
+import ctypes
 import os
 import platform
 
+from compushady import get_backend, SHADER_BINARY_TYPE_MSL
+from compushady.backends import dxc
+
 lib_dir = os.path.join(os.path.dirname(__file__), "..", "backends")
 
-if platform.system() == "Windows":
-    if hasattr(os, "add_dll_directory"):
-        os.add_dll_directory(lib_dir)
-    else:
-        import ctypes
 
-        ctypes.windll.kernel32.AddDllDirectory(lib_dir)
-elif platform.system() == "Linux":
-    if platform.machine() == "armv7l":
+if platform.machine() == "armv7l":
+    lib_path = os.path.join(lib_dir, "libdxcompiler_armhf.so")
+elif platform.machine() == "aarch64":
+    import sys
+
+    if sys.maxsize > 2**32:
+        lib_path = os.path.join(lib_dir, "libdxcompiler_aarch64.so")
+    else:
         lib_path = os.path.join(lib_dir, "libdxcompiler_armhf.so")
-    elif platform.machine() == "aarch64":
-        import sys
-        if sys.maxsize > 2 ** 32:
-            lib_path = os.path.join(lib_dir, "libdxcompiler_aarch64.so")
-        else:
-            lib_path = os.path.join(lib_dir, "libdxcompiler_armhf.so")
-    else:
-        lib_path = os.path.join(lib_dir, "libdxcompiler_x86_64.so")
-    import ctypes
+else:
+    lib_path = os.path.join(lib_dir, "libdxcompiler_x86_64.so")
 
-    ctypes.CDLL(lib_path, ctypes.RTLD_GLOBAL)
-elif platform.system() == "Darwin":
-    lib_path = os.path.join(lib_dir, "libdxcompiler.dylib")
-    import ctypes
-
-    ctypes.CDLL(lib_path, ctypes.RTLD_GLOBAL)
+ctypes.CDLL(lib_path, ctypes.RTLD_GLOBAL)
 
 
 def compile(source, entry_point="main", target="cs_6_0"):
-    blob = dxc.compile(source, entry_point, get_backend().get_shader_binary_type(), target)
+    blob = dxc.compile(
+        source, entry_point, get_backend().get_shader_binary_type(), target
+    )
     if get_backend().get_shader_binary_type() == SHADER_BINARY_TYPE_MSL:
         from compushady.backends import metal
 
