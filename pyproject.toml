@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "compushady-lrtu"
+version = "0.17.5.post6"
+description = "GPU Compute module (Vulkan/Linux only)"
+authors = [{ name = "Roberto De Ioris", email = "roberto.deioris@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.8"
+license = "MIT"
+classifiers = [
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+]

@@ -1,20 +1,19 @@
-
 import os
 import platform
 
 debug = False
-wanted_backend = None
+wanted_backend = "vulkan"
 
-compushady_backend_env = 'COMPUSHADY_BACKEND'
+compushady_backend_env = "COMPUSHADY_BACKEND"
 if compushady_backend_env in os.environ:
     wanted_backend = os.environ[compushady_backend_env]
 else:
-    if platform.system() == 'Windows':
-        wanted_backend = 'd3d12'
-    elif platform.system() == 'Darwin':
-        wanted_backend = 'metal'
+    if platform.system() == "Windows":
+        wanted_backend = "d3d12"
+    elif platform.system() == "Darwin":
+        wanted_backend = "metal"
     else:
-        wanted_backend = 'vulkan'
+        wanted_backend = "vulkan"
 
 
 def set_backend(backend_name):
