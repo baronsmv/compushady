@@ -102,7 +102,7 @@
 // conversion that throws exceptions for overflow cases.
 #define UIntToInt(uint_arg, int_ptr_arg) *int_ptr_arg = uint_arg
 
-#define INVALID_HANDLE_VALUE ((HANDLE)(LONG_PTR)-1)
+#define INVALID_HANDLE_VALUE ((HANDLE)(LONG_PTR) - 1)
 
 // Use errno to implement {Get|Set}LastError
 #define GetLastError() errno
@@ -139,7 +139,7 @@
 
 #define FILE_ATTRIBUTE_NORMAL 0x00000080
 #define FILE_ATTRIBUTE_DIRECTORY 0x00000010
-#define INVALID_FILE_ATTRIBUTES ((DWORD)-1)
+#define INVALID_FILE_ATTRIBUTES ((DWORD) - 1)
 
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
@@ -362,9 +362,9 @@ DECLARE_HANDLE(HINSTANCE);
 
 typedef void *HMODULE;
 
-#define STD_INPUT_HANDLE ((DWORD)-10)
-#define STD_OUTPUT_HANDLE ((DWORD)-11)
-#define STD_ERROR_HANDLE ((DWORD)-12)
+#define STD_INPUT_HANDLE ((DWORD) - 10)
+#define STD_OUTPUT_HANDLE ((DWORD) - 11)
+#define STD_ERROR_HANDLE ((DWORD) - 12)
 
 //===--------------------- ID Types and Macros for COM --------------------===//
 
@@ -571,7 +571,7 @@ template <typename T> inline void **IID_PPV_ARGS_Helper(T **pp) {
 
 CROSS_PLATFORM_UUIDOF(IUnknown, "00000000-0000-0000-C000-000000000046")
 struct IUnknown {
-  IUnknown(){};
+  IUnknown() {};
   virtual HRESULT QueryInterface(REFIID riid, void **ppvObject) = 0;
   virtual ULONG AddRef() = 0;
   virtual ULONG Release() = 0;
@@ -1000,7 +1000,7 @@ private:
 class CComBSTR {
 public:
   BSTR m_str;
-  CComBSTR() : m_str(nullptr){};
+  CComBSTR() : m_str(nullptr) {};
   CComBSTR(int nSize, LPCWSTR sz);
   ~CComBSTR() throw() { SysFreeString(m_str); }
   unsigned int Length() const throw() { return SysStringLen(m_str); }
